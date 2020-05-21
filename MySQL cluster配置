@@ -1,0 +1,163 @@
+#第一步：准备工作
+--------------------------------------
+数据库管理节点（ndb_mgmd）   10.0.0.100  
+数据库数据节点（NDB）        10.0.0.101、10.0.0.102         
+数据库SQL节点（API节点）     10.0.0.101、10.0.0.102         
+--------------------------------------
+#安装要求：
+       安装环境：Centos7.2
+       安装方式：源码安装
+       软件名称： mysql-cluster-gpl-7.6.12-linux-glibc2.12-x86_64.tar.gz
+       软件安装位置：/usr/local/mysql
+       数据存放位置：/data/mysql/db_file/
+       日志存放位置：/data/mysql/logs/
+       
+       
+############# 全部主机配置 #############
+
+#检查系统是否安装mysql
+rpm -qa |grep -i mysql
+卸载mysql的命令：rpm -e mysqlXXXX
+
+#创建用户及用户组
+groupadd mysql
+useradd -g mysql mysql
+usermod -d /home/mysql mysql
+
+############# 配置管理节点 #############
+//在管理主机（10.0.0.100）上进行
+
+#上传并解压
+上传文件到/opt/
+tar -zxvf mysql-cluster-gpl-7.6.12-linux-glibc2.12-x86_64.tar.gz
+mv mysql-cluster-gpl-7.6.12-linux-glibc2.12-x86_64 mysql
+cd mysql
+cp bin/ndb_mgm* /usr/local/bin
+cd /usr/local/bin
+chmod +x ndb_mgm*
+
+#创建配置文件
+mkdir /var/lib/mysql-cluster/
+cd  /var/lib/mysql-cluster/
+vim config.ini
+
+//config.ini内容如下
+[ndbd default]
+NoOfReplicas=2
+DataMemory=512M
+IndexMemory=18M
+
+[ndb_mgmd]
+HostName=10.0.0.100
+DataDir=/var/lib/mysql-cluster
+
+[ndbd]
+HostName=10.0.0.101
+DataDir=/var/lib/mysql-cluster
+
+[ndbd]
+HostName=10.0.0.102
+DataDir=/var/lib/mysql-cluster
+
+[mysqld]
+HostName=10.0.0.101
+[mysqld]
+HostName=10.0.0.102
+
+#初始化管理节点
+mkdir -p /usr/local/mysql/mysql-cluster
+/usr/local/bin/ndb_mgmd -f /var/lib/mysql-cluster/config.ini --initial
+
+注意（首次启动才需要加 --initial  后面启动去掉--initial即可）
+
+//控制台显示：
+[root@mysql-cluster-01 mysql]# /usr/local/bin/ndb_mgmd -f /var/lib/mysql-cluster/config.ini --initial
+MySQL Cluster Management Server mysql-5.7.28 ndb-7.6.12
+[root@mysql-cluster-01 mysql]# ndb_mgm
+-- NDB Cluster -- Management Client --
+ndb_mgm> show
+Connected to Management Server at: localhost:1186
+Cluster Configuration
+---------------------
+[ndbd(NDB)]     2 node(s)
+id=2 (not connected, accepting connect from 10.0.0.101)
+id=3 (not connected, accepting connect from 10.0.0.102)
+
+[ndb_mgmd(MGM)] 1 node(s)
+id=1    @10.0.0.100  (mysql-5.7.28 ndb-7.6.12)
+
+[mysqld(API)]   2 node(s)
+id=4 (not connected, accepting connect from 10.0.0.101)
+id=5 (not connected, accepting connect from 10.0.0.102)
+
+ndb_mgm> 
+
+############# 安装数据和SQL节点 #############
+
+#上传解压
+上传mysql-cluster-gpl-7.6.12-linux-glibc2.12-x86_64.tar.gz到/opt下
+tar -zxvf mysql-cluster-gpl-7.6.12-linux-glibc2.12-x86_64.tar.gz 
+mv mysql-cluster-gpl-7.6.12-linux-glibc2.12-x86_64 /usr/local/mysql
+cd /usr/local/mysql
+#拷贝数据节点脚本
+cp bin/ndbd /usr/local/bin
+chmod +x /usr/local/bin/ndbd
+
+#安装SQL节点
+mdkir -p /data/mysql/db_file/
+mdkir -p /data/mysql/logs/
+chown -R mysql:mysql /data
+chown -R mysql.mysql /usr/local/mysql/
+/usr/local/mysql/bin/mysqld --initialize --user=mysql  --basedir=/usr/local/mysql/ --datadir=/data/mysql/db_file/
+
+注意：保存生成的root密码
+
+#编辑配置文件
+
+[client]
+
+port=3306
+
+socket=/data/mysql/mysql.sock
+
+[mysqld]
+
+basedir=/usr/local/mysql/
+
+datadir=/data/mysql/db_file/
+
+user= mysql
+
+log-error=/data/mysql/logs/node.log
+
+pid-file=/var/run/mysql/mysql.pid
+
+ndbcluster    //运行NDB存储引擎                      
+
+ndb-connectstring=10.0.0.100  //指定管理节点  这两行声明其为SQL节点      
+
+[mysql_cluster]
+
+ndb-connectstring=10.0.0.100   //指定管理节点  这两行声明其为数据节点
+
+
+#设置mysql服务为开机自启动并启动
+cp /usr/local/mysql/support-files/mysql.server /etc/rc.d/init.d/mysqld
+chmod +x /etc/rc.d/init.d/mysqld 
+chkconfig --add mysqld 
+chkconfig --list mysqld  
+service mysqld start
+//启动报错，pid文件注意读写权限，sock文件可以链接（find / -name mysql.sock）
+ln -s /tmp/mysql.sock /data/mysql/mysql.sock
+
+#开启
+
+1.开启管理节点
+/usr/local/bin/ndb_mgmd -f /var/lib/mysql-cluster/config.ini
+2.开启数据节点
+/usr/local/mysql/bin/ndbd --initial
+3.开启SQL节点
+service  mysqld start
+
+#mysql cluster的关闭也很简单，只需在ndb_mgm> 提示符下输入 shutdown即可，这时会显示各节点的关闭信息，
+#再输入exit即可退出ndb_mgm管理，回到shell中。虽然mysql cluster 关闭了，但是SQL节点的mysql服务并不会停止的。
